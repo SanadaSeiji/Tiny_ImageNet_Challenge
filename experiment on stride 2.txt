@@ -1,0 +1,373 @@
+############################load img############################################
+# load the val annotations file
+
+import os
+
+"""
+modified from source code:
+https://github.com/miquelmarti/tiny-imagenet-classifier/blob/master/load_images.py
+https://github.com/miquelmarti/tiny-imagenet-classifier/blob/master/val_load.py
+
+"""
+
+
+def get_annotations_map():
+    valAnnotationsPath = './tiny-imagenet-200/val/val_annotations.txt'
+    valAnnotationsFile = open(valAnnotationsPath, 'r')
+    valAnnotationsContents = valAnnotationsFile.read()
+    valAnnotations = {}
+
+    for line in valAnnotationsContents.splitlines():
+        pieces = line.strip().split()
+        valAnnotations[pieces[0]] = pieces[1]
+    
+    return valAnnotations
+
+
+#Sys
+import numpy as np
+from PIL import Image
+
+
+def load_images(path,num_classes):
+    #Load images
+    
+    print('Loading ' + str(num_classes) + ' classes')
+
+    X_train0=np.zeros([num_classes*500,3,64,64],dtype='uint8')
+    X_train=np.zeros([num_classes*500,64,64,3],dtype='uint8')
+    y_train=np.zeros([num_classes*500], dtype='uint8')
+
+    trainPath=path+'/train'
+
+    print('loading training images...');
+
+    i=0
+    j=0
+    annotations={}
+    for sChild in os.listdir(trainPath):
+        sChildPath = os.path.join(os.path.join(trainPath,sChild),'images')
+        annotations[sChild]=j
+        for c in os.listdir(sChildPath):
+            X=np.array(Image.open(os.path.join(sChildPath,c)))
+            if len(np.shape(X))==2:
+                X_train0[i]=np.array([X,X,X])
+            else:
+                X_train0[i]=np.transpose(X,(2,0,1))
+            X_train[i]=np.transpose(X_train0[i],(1,2,0))
+            y_train[i]=j
+            i+=1
+        j+=1
+        if (j >= num_classes):
+            break
+
+    #print('finished loading training images')
+
+    val_annotations_map = get_annotations_map()
+
+    X_test0 = np.zeros([num_classes*50,3,64,64],dtype='uint8')
+    X_test = np.zeros([num_classes*50,64,64,3],dtype='uint8')
+    y_test = np.zeros([num_classes*50], dtype='uint8')
+
+
+    print('loading test images...')
+
+    i = 0
+    testPath=path+'/val/images'
+    for sChild in os.listdir(testPath):
+        if val_annotations_map[sChild] in annotations.keys():
+            sChildPath = os.path.join(testPath, sChild)
+            X=np.array(Image.open(sChildPath))
+            if len(np.shape(X))==2:
+                X_test0[i]=np.array([X,X,X])
+            else:
+                X_test0[i]=np.transpose(X,(2,0,1))
+            X_test[i]=np.transpose( X_test0[i],(1,2,0)) 
+            y_test[i]=annotations[val_annotations_map[sChild]]
+            i+=1
+        else:
+            pass
+
+
+   # print('finished loading test images')+str(i)
+
+    return X_train,y_train,X_test,y_test
+
+############################load model E.T. (Sun and Moon)####################################################
+
+# -*- coding: utf-8 -*-
+
+import cv2
+import copy
+
+from keras.layers import Input, Dense, Conv2D, MaxPooling2D, AveragePooling2D, ZeroPadding2D, Flatten, Activation, add
+from keras.optimizers import SGD
+from keras.layers.normalization import BatchNormalization
+from keras.models import Model
+from keras import initializers
+from keras.engine import Layer, InputSpec
+from keras import backend as K
+from keras.layers import merge
+from keras.layers import Dropout
+
+import sys
+sys.setrecursionlimit(3000)
+
+    #code source: https://github.com/keras-team/keras/blob/master/keras/applications/resnet50.py
+
+def identity_blockX(input_tensor, filters, stage, block):
+
+    eps = 1.1e-5
+    conv_name_base = 'res' + str(stage) + block + '_branch'
+    bn_name_base = 'bn' + str(stage) + block + '_branch'
+    scale_name_base = 'scale' + str(stage) + block + '_branch'
+
+    x = Conv2D(filters, (1, 1), name=conv_name_base + '2a', use_bias=False)(input_tensor)
+    #x = Dropout(0.2, name=conv_name_base + '2a_dropout')(x)
+    #x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2a')(x)
+    #x = Scale(axis=bn_axis, name=scale_name_base + '2a')(x)
+    x = Activation('relu', name=conv_name_base + '2a_relu')(x)
+
+    x = Conv2D(filters, (1, 1), name=conv_name_base + '2b', use_bias=False)(x)
+    #x = Dropout(0.2, name=conv_name_base + '2b_dropout')(x)
+    #x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2b')(x)
+    #x = Scale(axis=bn_axis, name=scale_name_base + '2b')(x)
+    x = Activation('relu', name=conv_name_base + '2b_relu')(x)
+
+    x = Conv2D(16, (1, 1), name=conv_name_base + '2c', use_bias=False)(x) #???
+    #x = Dropout(0.2, name=conv_name_base + '2c_dropout')(x)
+    #x = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '2c')(x)
+    #x = Scale(axis=bn_axis, name=scale_name_base + '2c')(x)
+    
+
+    x = merge([x, input_tensor], mode='sum', name='res' + str(stage) + block)
+    x = Activation('relu', name='res' + str(stage) + block + '_relu')(x)
+    return x
+
+def identity_blockY(input_tensor, filters, stage, block):
+  
+    eps = 1.1e-5
+    conv_name_base = 'res' + str(stage) + block + '_branch'
+    bn_name_base = 'bn' + str(stage) + block + '_branch'
+    scale_name_base = 'scale' + str(stage) + block + '_branch'
+
+    
+    y = Conv2D(filters, (3, 3), name=conv_name_base + '3a', use_bias=False)(input_tensor)
+    #y = Dropout(0.2, name=conv_name_base + '3a_dropout')(y)
+    #y = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '3a')(y)
+    #y = Scale(axis=bn_axis, name=scale_name_base + '3a')(y)
+    y = Activation('relu', name=conv_name_base + '3a_relu')(y)
+    
+    y = ZeroPadding2D((3, 3), name=conv_name_base + '3b_zeropadding')(y)
+
+    y = Conv2D(filters, (3, 3), name=conv_name_base + '3c', use_bias=False)(y)
+    #y = Dropout(0.2, name=conv_name_base + '3c_dropout')(y)
+    #y = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '3c')(y)
+    #y = Scale(axis=bn_axis, name=scale_name_base + '3c')(y)
+    y = Activation('relu', name=conv_name_base + '3c_relu')(y)
+
+    y = Conv2D(16, (3, 3), name=conv_name_base + '3d', use_bias=False)(y) #???
+    #y = Dropout(0.2, name=conv_name_base + '3d_dropout')(y)
+    #y = BatchNormalization(epsilon=eps, axis=bn_axis, name=bn_name_base + '3d')(y)
+    #y = Scale(axis=bn_axis, name=scale_name_base + '3d')(y)
+
+    x = merge([y, input_tensor], mode='sum', name='res' + str(stage) + block)
+    x = Activation('relu', name='res' + str(stage) + block + '_relu')(x)
+    return x
+
+def SM(include_top=False, weights=None,
+             input_tensor=None, input_shape=None,
+             pooling=None,
+             classes=5):
+   
+    eps = 1.1e-5
+
+    # Handle Dimension Ordering for different backends
+    global bn_axis
+    if K.image_dim_ordering() == 'tf':
+        bn_axis = 3
+        img_input = Input(shape=(64, 64, 3), name='data')
+    else:
+        bn_axis = 1
+        img_input = Input(shape=(3, 64, 64), name='data')
+
+    x = ZeroPadding2D((3, 3), name='conv1_zeropadding')(img_input)
+    x = Conv2D(16, (5, 5), strides=(1, 1), name='conv1', use_bias=False)(x)
+    #x = BatchNormalization(epsilon=eps, axis=bn_axis, name='bn_conv1')(x)
+    #x = Scale(axis=bn_axis, name='scale_conv1')(x)
+    x = Activation('relu', name='conv1_relu')(x)
+    x = MaxPooling2D((3, 3), strides=(2, 2), name='pool1')(x)
+	x = ZeroPadding2D((17, 17), name='conv1_zeropadding2')(x)
+
+    x = identity_blockX(x, 16, stage=2, block='b')
+    x = identity_blockY(x, 16, stage=2, block='c')
+
+    x = identity_blockX(x, 16, stage=3, block='b')
+    x = identity_blockY(x, 16, stage=3, block='c')
+    
+    x = identity_blockX(x, 16, stage=4, block='b')
+    x = identity_blockY(x, 16, stage=4, block='c')
+  
+    x = identity_blockX(x, 16, stage=5, block='b')
+    x = identity_blockY(x, 16, stage=5, block='c')
+    
+
+    x = AveragePooling2D((5, 5), name='avg_pool')(x)
+    x = Flatten()(x)
+    x = Dropout(0.5)(x)
+    x = Dense(5, activation='softmax', name = 'fc200')(x) # old class!!
+
+    # Ensure that the model takes into account
+    # any potential predecessors of `input_tensor`.
+    if input_tensor is not None:
+        inputs = get_source_inputs(input_tensor)
+    else:
+        inputs = img_input
+    # Create model.
+    model = Model(inputs, x, name='resnet50')
+
+    # load weights
+    if weights is not None:
+        model.load_weights(weights)
+
+    return model
+#########################################################################################
+
+if __name__ == "__main__":
+    
+    import matplotlib.pyplot as plt
+    
+    #Keras
+    import keras
+    from keras.datasets import mnist
+    from keras.models import Sequential
+    from keras.layers import Dense, Dropout
+    from keras.optimizers import RMSprop
+    from keras.layers.core import Dense, Dropout, Activation, Flatten
+    from keras.layers.convolutional import Convolution2D, MaxPooling2D, ZeroPadding2D, AveragePooling2D
+    from keras.layers.normalization import BatchNormalization 
+    from keras.utils import np_utils
+    from keras.optimizers import SGD, Adam
+    from keras.preprocessing.image import ImageDataGenerator  
+    from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau
+    import h5py
+
+    #Params
+    num_classes = 5
+    batch_size = 128 # cannot be larger...
+    nb_epoch = 300
+
+    path='./tiny-imagenet-200'
+    X_train,y_train,X_test,y_test=load_images(path,num_classes)
+    
+     
+    #print X dimension
+    print('X_train shape:', X_train.shape)
+    print(X_train.shape[0], 'train samples')
+    print(X_test.shape[0], 'test samples')
+    
+    num_samples=len(X_train)
+
+    
+    #convert 1-D class vectors to N-D class matrices
+    Y_train = np_utils.to_categorical(y_train, num_classes)
+    Y_test = np_utils.to_categorical(y_test, num_classes)
+    
+    #normalization of img data
+    X_test = X_test.astype('float32')/255
+    X_train = X_train.astype('float32')/255 
+   
+    
+    print ('done')
+    ##################################
+    
+
+    #----------load model----------------------
+    model = SM()
+    #loading weight from previous training
+    #model.load_weights('ep00.TI.ad-5.imgaug3.weights.best.hdf5')
+    # compile the model (should be done *after* setting layers to non-trainable)
+    #sgd = SGD(lr=1e-2, decay=1e-6, momentum=0.9, nesterov=True)
+    #rmsprop = RMSprop(lr=0.001)
+    sgd = SGD(lr=1e-5, decay=1e-7, momentum=0.5, nesterov=True)
+    adam = Adam(lr = 1e-3 )
+    
+    model.compile(optimizer=adam, loss='categorical_hinge', metrics=['accuracy'])
+    
+    
+    #data augm
+    datagen = ImageDataGenerator(
+                #zca_whitening = True,
+                rotation_range=40,
+                width_shift_range=0.4,
+                height_shift_range=0.4,
+                #shear_range=0.2,
+                #zoom_range=0.2,
+                #channel_shift_range=0.4,
+                #cval=0.4, #very cumbersome
+                horizontal_flip=True,
+                vertical_flip=True,
+                fill_mode='nearest'
+              )
+    datagen.fit(X_train)
+    
+    
+    #checkpoint
+    # checkpoint
+    filepath="ep00.TI.ad-5.stride1.weights.best.hdf5"
+    checkpoint = ModelCheckpoint(filepath, monitor='val_acc', verbose=1, save_best_only=True, mode='auto')
+    
+    reduceLr = ReduceLROnPlateau(monitor='loss', patience=50, mode= 'auto', factor = 0.5)
+    
+
+    callbacks_list = [checkpoint, reduceLr]
+    
+    #fit model
+    history = model.fit_generator(datagen.flow(X_train, Y_train, batch_size=batch_size),
+                        steps_per_epoch=X_train.shape[0] // batch_size,
+                        epochs=nb_epoch, callbacks=callbacks_list,
+                        validation_data=(X_test, Y_test))
+
+
+
+    #evaluate model
+    score = model.evaluate(X_test, Y_test, verbose=1)
+    print('Test score:', score[0])
+    print('Test accuracy:', score[1])
+    
+    
+    hist_acc = history.history['acc']
+    hist_valAcc = history.history['val_acc']
+    hist_loss = history.history['loss']
+    hist_valLoss = history.history['val_loss']
+    
+    #create h5
+    h5f = h5py.File('IT.10.ad-5.stride1.result.h5', 'w')
+    h5f.create_dataset('acc', data=hist_acc)
+    h5f.create_dataset('val_acc', data=hist_valAcc)
+    h5f.create_dataset('loss', data=hist_loss)
+    h5f.create_dataset('val_loss', data=hist_valLoss)
+   
+    
+    
+    h5f.close()
+    
+    #-------------plot-------------------
+     #  "Accuracy"
+    plt.plot(hist_acc )
+    plt.plot(hist_valAcc)
+    plt.title('model accuracy')
+    plt.ylabel('accuracy')
+    plt.xlabel('epoch')
+    plt.legend(['train', 'validation'], loc='upper left')
+    plt.show()
+    
+    # "Loss"
+    plt.plot(hist_loss)
+    plt.plot(hist_valLoss)
+    plt.title('model loss')
+    plt.ylabel('loss')
+    plt.xlabel('epoch')
+    plt.legend(['train', 'validation'], loc='upper left')
+    plt.show()
+    
